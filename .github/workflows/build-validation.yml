@@ -2,13 +2,26 @@ name: build
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
     paths:
-    - '**.cs'
-    - '**.csproj'
+      - "**.cs"
+      - "**.csproj"
+      - "**.yml"
+      - "!docs/**"
+      - "!.github/workflows/docs-deploy.yml"
+      - "!.github/workflows/docs-pr-check.yml"
+      - "!.github/workflows/es_docs_deploy.yaml"
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "The reason for running the workflow"
+        required: true
+        default: "Manual run"
 
-env:
-  DOTNET_VERSION: '3.1.402' # set this to the dot net version to use
+# Only one instance of this build at a time.
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -19,19 +32,75 @@ jobs:
         os: [ubuntu-latest, windows-latest, macOS-latest]
 
     steps:
-    - uses: actions/checkout@v2
-    - name: Setup .NET Core
-      uses: actions/setup-dotnet@v1
-      with:
-        dotnet-version: ${{ env.DOTNET_VERSION }}
+      - uses: actions/checkout@main
+      - name: Setup .NET
+        uses: actions/setup-dotnet@main
+        with:
+          dotnet-version: |
+            10.0.x
 
-    - name: Install dependencies
-      run: dotnet restore
-      
-    - name: Build
-      run: |
-        dotnet build --configuration Release --no-restore
+      - name: Install dependencies
+        run: dotnet restore
 
-    - name: Test
-      run: |
-        dotnet test --no-restore --verbosity normal
+      - name: Build
+        run: |
+          dotnet build --configuration Release --no-restore
+
+      - name: Test
+        run: |
+          dotnet test --no-restore --verbosity normal --filter "Category!=Acceptance"
+
+  # acceptance-tests:
+  #   needs: build
+  #   runs-on: ubuntu-latest
+
+  #   steps:
+  #     - uses: actions/checkout@main
+  #     - name: Setup .NET
+  #       uses: actions/setup-dotnet@main
+  #       with:
+  #         dotnet-version: |
+  #           10.0.x
+
+  #     - name: Install dependencies
+  #       run: dotnet restore
+
+  #     - name: Build
+  #       run: |
+  #         dotnet build --configuration Release --no-restore
+
+  #     - name: Prune databases
+  #       working-directory: ./tools/CosmosTestHelper
+  #       env:
+  #         CosmosConnectionString: ${{ secrets.COSMOS_INTEGRATION_TEST_CONNECTION_STRING }}
+  #       run: dotnet run
+
+  #     - name: Test Functions
+  #       env:
+  #         CosmosConnectionString: ${{ secrets.COSMOS_INTEGRATION_TEST_CONNECTION_STRING }}
+  #       run: |
+  #         dotnet test --no-restore --verbosity normal --filter "Category=Acceptance&Type!=Container&Type!=CosmosEventSourcing"
+
+  #     - name: Prune databases
+  #       working-directory: ./tools/CosmosTestHelper
+  #       env:
+  #         CosmosConnectionString: ${{ secrets.COSMOS_INTEGRATION_TEST_CONNECTION_STRING }}
+  #       run: dotnet run
+
+  #     - name: Test Cosmos Event Sourcing
+  #       env:
+  #         CosmosConnectionString: ${{ secrets.COSMOS_INTEGRATION_TEST_CONNECTION_STRING }}
+  #       run: |
+  #         dotnet test --no-restore --verbosity normal --filter "Category=Acceptance&Type=CosmosEventSourcing"
+
+  #     - name: Prune databases
+  #       working-directory: ./tools/CosmosTestHelper
+  #       env:
+  #         CosmosConnectionString: ${{ secrets.COSMOS_INTEGRATION_TEST_CONNECTION_STRING }}
+  #       run: dotnet run
+
+  #     - name: Test Container Creation
+  #       env:
+  #         CosmosConnectionString: ${{ secrets.COSMOS_INTEGRATION_TEST_CONNECTION_STRING }}
+  #       run: |
+  #         dotnet test --no-restore --verbosity normal --filter "Category=Acceptance&Type=Container"

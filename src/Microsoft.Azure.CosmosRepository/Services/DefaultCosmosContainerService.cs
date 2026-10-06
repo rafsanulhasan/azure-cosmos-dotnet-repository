@@ -1,0 +1,129 @@
+﻿// Copyright (c) David Pine. All rights reserved.
+// Licensed under the MIT License.
+
+namespace Microsoft.Azure.CosmosRepository.Services;
+
+class DefaultCosmosContainerService : ICosmosContainerService
+{
+    readonly ICosmosItemConfigurationProvider _cosmosItemConfigurationProvider;
+    readonly ICosmosContainerNameProvider _cosmosContainerNameProvider;
+    readonly ICosmosClientProvider _cosmosClientProvider;
+    readonly ILogger<DefaultCosmosContainerService> _logger;
+    readonly RepositoryOptions _options;
+    readonly ConcurrentDictionary<string, DateTime> _containerSyncLog = [];
+    readonly ConcurrentDictionary<string, SemaphoreSlim> _containerSyncLocks = [];
+
+    public DefaultCosmosContainerService(
+        ICosmosItemConfigurationProvider cosmosItemConfigurationProvider,
+        ICosmosContainerNameProvider cosmosContainerNameProvider,
+        ICosmosClientProvider cosmosClientProvider,
+        IOptions<RepositoryOptions> options,
+        ILogger<DefaultCosmosContainerService> logger,
+        IRepositoryOptionsValidator repositoryOptionsValidator)
+    {
+        repositoryOptionsValidator.ValidateForContainerCreation(options);
+
+        _cosmosItemConfigurationProvider = cosmosItemConfigurationProvider;
+        _cosmosContainerNameProvider = cosmosContainerNameProvider;
+        _cosmosClientProvider = cosmosClientProvider;
+        _logger = logger;
+        _options = options.Value;
+    }
+
+    public Task<Container> GetContainerAsync<TItem>(bool forceContainerSync = false) where TItem : IItem =>
+        GetContainerAsync(typeof(TItem), forceContainerSync);
+
+    private async Task<Container> GetContainerAsync(Type itemType, bool forceContainerSync = false)
+    {
+        try
+        {
+            ItemConfiguration itemConfiguration = _cosmosItemConfigurationProvider.GetItemConfiguration(itemType);
+
+            Database database =
+                _options.IsAutoResourceCreationIfNotExistsEnabled
+                    ? await _cosmosClientProvider.UseClientAsync(
+                        client => client.CreateDatabaseIfNotExistsAsync(_options.DatabaseId)).ConfigureAwait(false)
+                    : await _cosmosClientProvider.UseClientAsync(
+                        client => Task.FromResult(client.GetDatabase(_options.DatabaseId))).ConfigureAwait(false);
+
+            ContainerProperties containerProperties = new()
+            {
+                Id = _options.ContainerPerItemType
+                    ? itemConfiguration.ContainerName
+                    : _options.ContainerId,
+                PartitionKeyPath = itemConfiguration.PartitionKeyPath,
+                UniqueKeyPolicy = itemConfiguration.UniqueKeyPolicy ?? new(),
+                DefaultTimeToLive = itemConfiguration.DefaultTimeToLive
+            };
+
+            Container container =
+                _options.IsAutoResourceCreationIfNotExistsEnabled
+                    ? await database.CreateContainerIfNotExistsAsync(
+                        containerProperties, itemConfiguration.ThroughputProperties).ConfigureAwait(false)
+                    : await Task.FromResult(database.GetContainer(containerProperties.Id)).ConfigureAwait(false);
+
+            string containerId = containerProperties.Id;
+
+            if ((itemConfiguration.SyncContainerProperties is false ||
+                 _containerSyncLog.ContainsKey(containerId)) && forceContainerSync is false)
+            {
+                return container;
+            }
+
+            SemaphoreSlim containerSyncLock =
+                _containerSyncLocks.GetOrAdd(containerId, static _ => new SemaphoreSlim(1, 1));
+
+            await containerSyncLock.WaitAsync().ConfigureAwait(false);
+
+            try
+            {
+                if ((itemConfiguration.SyncContainerProperties is false ||
+                     _containerSyncLog.ContainsKey(containerId)) && forceContainerSync is false)
+                {
+                    return container;
+                }
+
+                await container.ReplaceThroughputAsync(itemConfiguration.ThroughputProperties).ConfigureAwait(false);
+                await container.ReplaceContainerAsync(containerProperties).ConfigureAwait(false);
+
+                if (itemConfiguration.SyncContainerProperties)
+                {
+                    _containerSyncLog.TryAdd(containerId, DateTime.UtcNow);
+                }
+            }
+            finally
+            {
+                containerSyncLock.Release();
+            }
+
+            return container;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get container with error {GetContainerError}", ex.Message);
+            throw;
+        }
+    }
+
+    public Task<Container> GetContainerAsync(IReadOnlyList<Type> itemTypes)
+    {
+        itemTypes.AreAllItems();
+
+        if (itemTypes.Any() is false)
+        {
+            throw new InvalidOperationException("You must provided at least one item type to get a container for");
+        }
+
+        BatchContainerValidation.EnsureSameContainer(
+            itemTypes,
+            itemType => _options.ContainerPerItemType
+                ? _cosmosContainerNameProvider.GetContainerName(itemType)
+                : _options.ContainerId);
+
+        Type seedType = itemTypes
+            .OrderBy(itemType => itemType.FullName, StringComparer.Ordinal)
+            .First();
+
+        return GetContainerAsync(seedType);
+    }
+}

@@ -9,6 +9,9 @@
 *.userosscache
 *.sln.docstates
 
+# Hugo
+.hugo_build.lock
+
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 
@@ -23,6 +26,10 @@ bld/
 [Bb]in/
 [Oo]bj/
 [Ll]og/
+
+docs/public/*
+
+.DS_STORE
 
 # Visual Studio 2015/2017 cache/options directory
 .vs/
@@ -328,3 +335,7 @@ ASALocalRun/
 
 # MFractors (Xamarin productivity tool) working folder 
 .mfractor/
+docs/.hugo_build.lock
+
+# playwright-cli scratch dirs
+.playwright-cli/
